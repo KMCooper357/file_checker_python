@@ -1,0 +1,52 @@
+name: File Check (Prod)
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check-files:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python and AWS CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y awscli jq
+
+      - name: Run file presence check
+        run: python check_required_files.py
+
+      - name: Log to CloudWatch (Prod)
+        if: success()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          LOG_GROUP_NAME: "/github-actions/required-files-checker/prod"
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          EPOCH_MS=$(($(date +%s%3N)))
+          LOG_STREAM_NAME="$TIMESTAMP"
+
+          aws logs create-log-stream \
+            --log-group-name "$LOG_GROUP_NAME" \
+            --log-stream-name "$LOG_STREAM_NAME" || true
+
+          MESSAGE=$(jq -n \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg sha "$GITHUB_SHA" \
+            --arg actor "$GITHUB_ACTOR" \
+            --arg timestamp "$TIMESTAMP" \
+            '{workflow: $workflow, sha: $sha, actor: $actor, timestamp: $timestamp}')
+
+          aws logs put-log-events \
+            --log-group-name "$LOG_GROUP_NAME" \
+            --log-stream-name "$LOG_STREAM_NAME" \
+            --log-events timestamp=$EPOCH_MS,message="$MESSAGE"
